@@ -1,1 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad Plus - Telegram Mini App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, increment, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        const user = tg.initDataUnsafe?.user;
+        const userId = user ? user.id.toString() : "test_user";
+        
+        let usdBalance = 0;
+        let ksBalance = 0;
+        const rate = 4000; // 1 USD = 4000 KS
+
+        // UI Elements
+        const pages = ['home-page', 'withdraw-page', 'transfer-page'];
+        const usdBalanceEls = document.querySelectorAll('.usd-balance');
+        const ksBalanceEls = document.querySelectorAll('.ks-balance');
+
+        window.showPage = (pageId) => {
+            pages.forEach(p => document.getElementById(p).classList.add('hidden'));
+            document.getElementById(pageId + '-page').classList.remove('hidden');
+            
+            // UI Button Highlighting
+            document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('text-white'));
+            document.getElementById('nav-' + pageId).classList.add('text-white');
+            tg.HapticFeedback.selectionChanged();
+        };
+
+// Withdraw Form Submission Logic
+document.getElementById('withdraw-form').onsubmit = async (e) => {
+    e.preventDefault();
+    
+    const method = document.getElementById('w-method').value;
+    const name = document.getElementById('w-name').value;
+    const phone = document.getElementById('w-phone').value;
+    const amount = parseFloat(document.getElementById('w-amount').value);
+
+    // အနည်းဆုံး $5 ရှိမှ ထုတ်ခွင့်ပေးမယ် (စိတ်ကြိုက်ပြင်နိုင်သည်)
+    if (amount < 5) {
+        return alert("အနည်းဆုံး $5 ရှိမှ ထုတ်ယူနိုင်ပါမည်။");
+    }
+
+    if (amount > usdBalance) {
+        return alert("လက်ကျန်ငွေ မလုံလောက်ပါ။");
+    }
+
+    try {
+        // ၁။ Firebase "withdraw_requests" ထဲကို တောင်းဆိုချက် အသစ်ထည့်မယ်
+        await addDoc(collection(db, "withdraw_requests"), {
+            userId: userId,
+            userName: name,
+            method: method,
+            phone: phone,
+            amount: amount,
+            status: "pending", // အစပိုင်းမှာ pending လို့ ထားမယ်
+            timestamp: serverTimestamp()
+        });
+
+        // ၂။ User ရဲ့ Balance ထဲကနေ ထုတ်လိုက်တဲ့ ပမာဏကို နုတ်မယ်
+        const docRef = doc(db, "users", userId);
+        await updateDoc(docRef, {
+            balance: increment(-amount)
+        });
+
+        alert("ငွေထုတ်ယူရန် တောင်းဆိုမှု အောင်မြင်ပါသည်။ ခေတ္တစောင့်ဆိုင်းပေးပါ။");
+        
+        // Form ကို Reset လုပ်ပြီး Home ကို ပြန်သွားမယ်
+        document.getElementById('withdraw-form').reset();
+        showPage('home');
+        loadData(); // UI Refresh လုပ်တာ
+
+    } catch (error) {
+        console.error("Error: ", error);
+        alert("အမှားတစ်ခု ဖြစ်သွားပါသည်။ နောက်မှ ထပ်စမ်းကြည့်ပါ။");
+    }
+};
+
+
+        async function loadData() {
+            const docRef = doc(db, "users", userId);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                usdBalance = data.balance || 0;
+                ksBalance = data.ks_balance || 0;
+                
+                usdBalanceEls.forEach(el => el.innerText = `$${usdBalance.toFixed(3)}`);
+                ksBalanceEls.forEach(el => el.innerText = `KS ${ksBalance.toLocaleString()}`);
+                document.getElementById('ad-count').innerText = `${data.videoCount || 0}/250`;
+            } else {
+                await setDoc(docRef, { balance: 0, ks_balance: 0, videoCount: 0 });
+            }
+        }
+
+        // --- Transfer Logic ---
+        const transferType = document.getElementById('transfer-type');
+        const transferInput = document.getElementById('transfer-amount');
+        const transferResult = document.getElementById('transfer-result');
+
+        transferInput.addEventListener('input', () => {
+            const val = parseFloat(transferInput.value) || 0;
+            if (transferType.value === 'usd_to_ks') {
+                transferResult.innerText = `You will receive: ${(val * rate).toLocaleString()} KS`;
+            } else {
+                transferResult.innerText = `You will receive: $${(val / rate).toFixed(3)}`;
+            }
+        });
+
+        document.getElementById('transfer-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const amount = parseFloat(transferInput.value);
+            const docRef = doc(db, "users", userId);
+
+            if (transferType.value === 'usd_to_ks') {
+                if (amount > usdBalance) return alert("Insufficient USD Balance!");
+                await updateDoc(docRef, {
+                    balance: increment(-amount),
+                    ks_balance: increment(amount * rate)
+                });
+            } else {
+                if (amount > ksBalance) return alert("Insufficient KS Balance!");
+                await updateDoc(docRef, {
+                    ks_balance: increment(-amount),
+                    balance: increment(amount / rate)
+                });
+            }
+            alert("Transfer Successful!");
+            transferInput.value = '';
+            loadData();
+        };
+
+    
+    </script>
+    <style>
+        body { background-color: #000; color: #fff; -webkit-tap-highlight-color: transparent; }
+        .hidden { display: none; }
+        .card { background: #18181b; border: 1px solid #27272a; border-radius: 30px; }
+    </style>
+</head>
+<body class="flex flex-col min-h-screen">
+
+    <!-- HOME PAGE -->
+    <div id="home-page" class="flex-grow p-4 space-y-4">
+      <!-- Promo Banner (Card ရဲ့ အပေါ်ဆုံးမှာ ပေါ်မယ့်စာသား) -->
+<div class="bg-zinc-900/80 py-3 text-center text-[13px] font-medium border-b border-zinc-800 mb-4">
+    တစ်ရက်ကို video <span class="text-white font-bold">250</span> ပြီးအောင်ကြည့်ပြီး <span class="text-yellow-400 font-bold">5$</span> ရယူပါ
+</div>
+
+
+  <div class="card p-8 text-center">
+            <p class="text-zinc-500 text-sm">Total Balance</p>
+            <h1 class="usd-balance text-5xl font-bold tracking-tighter">$0.000</h1>
+            <p class="ks-balance text-zinc-400 mt-2">KS 0</p>
+        </div>
+        <div id="ad-btn" class="card p-10 flex flex-col items-center active:scale-95 transition cursor-pointer">
+            <div class="bg-white w-12 h-12 rounded-full flex items-center justify-center mb-4"><span class="text-black">▶</span></div>
+            <h2 class="text-lg font-bold">Ad Video</h2>
+            <p id="ad-count" class="text-2xl font-black text-white">0/250</p>
+        </div>
+    </div>
+
+    <!-- TRANSFER PAGE -->
+    <div id="transfer-page" class="hidden flex-grow p-5">
+        <h2 class="text-2xl font-bold mb-6 text-center">Currency Exchange</h2>
+        <div class="card p-6 mb-6 flex justify-between items-center">
+            <div><p class="text-xs text-zinc-500">USD</p><h3 class="usd-balance font-bold">$0.00</h3></div>
+            <div class="text-zinc-700">|</div>
+            <div class="text-right"><p class="text-xs text-zinc-500">Kyat</p><h3 class="ks-balance font-bold text-sm">KS 0</h3></div>
+        </div>
+
+        <form id="transfer-form" class="space-y-4">
+            <select id="transfer-type" class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none">
+                <option value="usd_to_ks">USD to Myanmar Kyat</option>
+                <option value="ks_to_usd">Myanmar Kyat to USD</option>
+            </select>
+            <input id="transfer-amount" type="number" step="any" placeholder="Amount to transfer" required class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none">
+            <p id="transfer-result" class="text-center text-yellow-500 text-sm font-medium">You will receive: 0</p>
+            <button type="submit" class="w-full bg-white text-black font-bold py-4 rounded-2xl active:scale-95 transition mt-4">Transfer Now</button>
+        </form>
+    </div>
+
+    <!-- WITHDRAW PAGE -->
+    <div id="withdraw-page" class="hidden flex-grow p-5 text-center">
+        <h2 class="text-2xl font-bold mb-6">Withdraw Funds</h2>
+        <div class="card p-6 mb-6">
+             <p class="text-zinc-500 text-sm">Available USD</p>
+             <h1 class="usd-balance text-3xl font-bold">$0.000</h1>
+        </div>
+        <!-- ဒီ Code ကို အစားထိုးပါ -->
+<form id="withdraw-form" class="space-y-4 text-left mt-6">
+    <div>
+        <label class="text-xs text-zinc-500 ml-2">Payment Method</label>
+        <select id="w-method" class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none mt-1">
+            <option value="kpay">Kpay</option>
+            <option value="wave">WavePay</option>
+            <option value="binance">Binance (USDT)</option>
+        </select>
+    </div>
+
+    <div>
+        <label class="text-xs text-zinc-500 ml-2">Full Name</label>
+        <input id="w-name" type="text" placeholder="အမည် ရေးပါ" required class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none mt-1">
+    </div>
+
+    <div>
+        <label class="text-xs text-zinc-500 ml-2">Phone / Wallet ID</label>
+        <input id="w-phone" type="text" placeholder="09xxxxxxx" required class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none mt-1">
+    </div>
+
+    <div>
+        <label class="text-xs text-zinc-500 ml-2">Amount to Withdraw (USD)</label>
+        <input id="w-amount" type="number" step="any" placeholder="ထုတ်ယူမည့် ပမာဏ" required class="w-full bg-zinc-900 p-4 rounded-2xl border border-zinc-800 outline-none mt-1">
+    </div>
+
+    <button type="submit" class="w-full bg-white text-black font-bold py-4 rounded-2xl active:scale-95 transition mt-4">
+        Confirm Withdrawal
+    </button>
+</form>
+    </div>
+
+    <!-- Bottom Nav -->
+    <nav class="bg-zinc-950 border-t border-zinc-900 py-4 flex justify-around">
+        <button id="nav-home" onclick="showPage('home')" class="nav-btn text-white flex flex-col items-center">
+            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+            <span class="text-[10px] mt-1">Home</span>
+        </button>
+        <button id="nav-transfer" onclick="showPage('transfer')" class="nav-btn text-zinc-500 flex flex-col items-center">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+            <span class="text-[10px] mt-1">Transfer</span>
+        </button>
+        <button id="nav-withdraw" onclick="showPage('withdraw')" class="nav-btn text-zinc-500 flex flex-col items-center">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path ဂd="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2ရ 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+            <span class="text-[10px] mt-1">Withdraw</span>
+        </button>
+    </nav>
+</body>
+  </html>
